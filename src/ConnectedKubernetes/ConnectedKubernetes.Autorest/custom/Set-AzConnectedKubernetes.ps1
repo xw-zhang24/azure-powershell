@@ -270,6 +270,8 @@ function New-AzConnectedKubernetes {
         ${GatewayResourceId}
     )
 
+    # XW: Set is a copy of new, except that it tries to get existing connected cluster first, 
+    # and only proceeds to set (with PUT request) if it exists.
     process {
         . "$PSScriptRoot/helpers/HelmHelper.ps1"
         . "$PSScriptRoot/helpers/ConfigDPHelper.ps1"
@@ -311,6 +313,7 @@ function New-AzConnectedKubernetes {
         if (($null -eq $KubeContext) -or ($KubeContext -eq '')) {
             $KubeContext = kubectl config current-context
         }
+
 
         if ($PSBoundParameters:ConnectionType) {
             if ($ConnectionType.Equals("direct")) {
@@ -411,19 +414,17 @@ function New-AzConnectedKubernetes {
             try {
                 $ExistConnectedKubernetes = Get-AzConnectedKubernetes -ResourceGroupName $ConfigmapRgName -ClusterName $ConfigmapClusterName @CommonPSBoundParameters
 
-                if (($ResourceGroupName -eq $ConfigmapRgName) -and ($ClusterName -eq $ConfigmapClusterName)) {
-                    # This performs a re-PUT of an existing connected cluster which should really be done using
-                    # a Set-AzConnectedKubernetes cmdlet!
-                    $PSBoundParameters.Add('AgentPublicKeyCertificate', $ExistConnectedKubernetes.AgentPublicKeyCertificate)
-                    return Az.ConnectedKubernetes.internal\New-AzConnectedKubernetes @PSBoundParameters
+                if ($ExistConnectedKubernetes) {
+                    if (!($ResourceGroupName -eq $ConfigmapRgName) -or !($ClusterName -eq $ConfigmapClusterName)) {                        
+                        Write-Error "The provided cluster name and resource group name do not correspond to the kubernetes cluster you are operating on."
+                        return
+                    }
                 } else {
-                    # We have a cluster with the same Kubernetes settings but already associated via a different RG - error!
-                    Write-Error "The kubernetes cluster you are trying to onboard is already onboarded to the resource group '${ConfigmapRgName}' with resource name '${ConfigmapClusterName}'."
-                }
-                return
+                    Write-Error "There exist no ConnectedCluster resource corresponding to this kubernetes Cluster."
+                    return
+                }                
             } catch {
-                # This is attempting to delete Azure Arc resources that are orphaned.
-                helm delete azure-arc --namespace $ReleaseNamespace --kubeconfig $KubeConfig --kube-context $KubeContext
+                Write-Error "Failed to check if connected cluster resource already exists."
             }
         }
 
