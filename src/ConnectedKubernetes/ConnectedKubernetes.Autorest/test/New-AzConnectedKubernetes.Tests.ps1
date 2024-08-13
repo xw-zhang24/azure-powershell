@@ -12,6 +12,8 @@ if(($null -eq $TestName) -or ($TestName -contains 'New-AzConnectedKubernetes'))
       $currentPath = Split-Path -Path $currentPath -Parent
   }
   . ($mockingPath | Select-Object -First 1).FullName
+  # !!PDS: Better way to do this?
+  . "$PSScriptRoot/../custom/helpers/ConfigDPHelper.ps1"
 }
 
 Describe 'New-AzConnectedKubernetes' {
@@ -20,109 +22,225 @@ Describe 'New-AzConnectedKubernetes' {
     }
 }
 
-Describe 'Invoke-HealthCheckDP' {
-    It 'Golden path' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-
-    It 'Env access token' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-
-    It 'Unhealthy (not 200 response)' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-}
-
-Describe 'Invoke-RestMethodWithRetries' {
-    It 'Golden path' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-
-    It 'URI parameters' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-
-    It 'Retry required' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-
-    It 'request failed' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-}
-
-Describe 'Invoke-RawRequest' {
-    It 'Golden path' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-
-    It 'JSON headers' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-
-    It 'String headers' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-
-    It 'Authorization provided' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-
-    It 'JSON body' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-
-    It 'Unrecognised body type' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-
-    It 'URL parameters' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-
-    It 'No protocol or system name' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-
-    It 'Error response' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
-    }
-}
-
-Describe 'Get-SubscriptionIdFromResourceId' {
-    It 'Finds the subscription id from a resource id' {
-        InModuleScope Az.ConnectedKubernetes.custom {
-            $resourceId = '/subscriptions/12345678-9ABC-DEF0-1234-56789ABCDEF0/resourceGroups/rg/providers/Microsoft.Kubernetes/connectedClusters/cluster'
-            $subscriptionId = Get-SubscriptionIdFromResourceId -ResourceId $resourceId
-            $subscriptionId | Should -Be '12345678-9ABC-DEF0-1234-56789ABCDEF0'
+Describe 'Invoke-ConfigDPHealthCheck' {
+    # Note that we Mock Invoke-RestMethod and not Invoke-RestMethodWithUriParameters
+    # because it appears that Pester has a problem handling ordered hashtable
+    # as a parameter to Mock. This is a workaround.
+    It 'Golden path' {
+        Mock Invoke-RestMethod {
+            $Script:StatusCode = 200
+            return 
         }
+        { Invoke-ConfigDPHealthCheck } | Should -Not -Throw
     }
 
-    It 'Finds no subscription id in a resource id' {
-        InModuleScope Az.ConnectedKubernetes.custom {
-            $resourceId = '/not-a-subscription/12345678-9ABC-DEF0-1234-56789ABCDEF0/resourceGroups/rg/providers/Microsoft.Kubernetes/connectedClusters/cluster'
-            $subscriptionId = Get-SubscriptionIdFromResourceId -ResourceId $resourceId
-            $subscriptionId | Should -Be $null
+    It 'Env access token' {
+        $env:AZURE_ACCESS_TOKEN = "This is an access token"
+        Mock Invoke-RestMethod {
+            $Script:StatusCode = 200
+            return 
         }
+        { Invoke-ConfigDPHealthCheck } | Should -Not -Throw
+    }
+
+    It 'Unhealthy (not 200 response)' {
+        Mock Invoke-RestMethod {
+            $Script:StatusCode = 500
+            return 
+        }
+        { Invoke-ConfigDPHealthCheck } | Should -Throw "Error while performing DP health check, StatusCode: 500"
+    }
+}
+
+Describe 'Invoke-RestMethodWithUriParameters' {
+    It 'Golden path' {
+        Mock Invoke-RestMethod {
+            $Script:StatusCode = 200
+            return 
+        }
+        { 
+            $uriParameters = [ordered]@{}
+            Invoke-RestMethodWithUriParameters `
+                -Method "POST" `
+                -Uri "https://invalid.invalid/some/page/nowhere" `
+                -Headers @{} `
+                -UriParameters $uriParameters `
+                -RequestBody @{} `
+                -MaximumRetryCount 5 `
+                -RetryIntervalSec 2 `
+                -StatusCodeVariable YesOrNo
+        } | Should -Not -Throw 
+        Assert-MockCalled "Invoke-RestMethod" -Times 1 -ParameterFilter { $Uri.AbsoluteUri -eq "https://invalid.invalid/some/page/nowhere" } 
+        Assert-VerifiableMock
+        $YesOrNo | Should -Be 200
+    }
+
+    It 'URI parameters' {
+        Mock Invoke-RestMethod {
+            $Script:StatusCode = 200
+            return 
+        }
+
+        { 
+            # Create a hashtable with sample key-value pairs
+            $uriParameters = [ordered]@{"key1"="value1"; "key2"="value2"}
+
+            Invoke-RestMethodWithUriParameters `
+                -Method "POST" `
+                -Uri "https://invalid.invalid/some/page/nowhere" `
+                -Headers @{} `
+                -UriParameters $uriParameters `
+                -RequestBody @{} `
+                -MaximumRetryCount 5 `
+                -RetryIntervalSec 2 `
+                -StatusCodeVariable YesOrNo
+        } | Should -Not -Throw
+        Assert-MockCalled "Invoke-RestMethod" -Times 1 -ParameterFilter { $Uri.AbsoluteUri -eq "https://invalid.invalid/some/page/nowhere?key1=value1&key2=value2" }
+        Assert-VerifiableMock
+        $YesOrNo | Should -Be 200
+    }
+
+    It 'request failed' {
+        Mock Invoke-RestMethod {
+            $Script:StatusCode = 500
+            return 
+        }
+        { 
+            Invoke-RestMethodWithUriParameters `
+                -Method "POST" `
+                -Uri "https://invalid.invalid/some/page/nowhere" `
+                -Headers @{} `
+                -UriParameters @{} `
+                -RequestBody @{} `
+                -MaximumRetryCount 5 `
+                -RetryIntervalSec 2 `
+                -StatusCodeVariable YesOrNo
+        } | Should -Not -Throw
+        Assert-VerifiableMock
+        $YesOrNo | Should -Be 500
+    }
+}
+
+Describe 'Get-ConfigDpDefaultEndpoint' {
+    It 'Golden path' {
+        {
+           $cloudMetadata = [PSCustomObject]@{
+                authentication = [PSCustomobject]@{
+                    loginEndpoint = "https://login.microsoftonline.com"
+               }
+           }
+           $script:configDpEndpoint = Get-ConfigDpDefaultEndpoint `
+                -Location "eastus2" `
+                -CloudMetadata $cloudMetadata
+        } | Should -Not -Throw
+        $configDpEndpoint | Should -Be "https://eastus2.dp.kubernetesconfiguration.azure.com"
+    }
+
+    # !!PDS: How do we validate this?  Need to check endpoint on a sovereign cloud.
+    It 'Soveregn cloud' {
+        {
+           $cloudMetadata = [PSCustomObject]@{
+                authentication = [PSCustomobject]@{
+                    loginEndpoint = "https://login.microsoftonline.sovereign.com"
+               }
+           }
+           $script:configDpEndpoint = Get-ConfigDpDefaultEndpoint `
+                -Location "westus3" `
+                -CloudMetadata $cloudMetadata
+        } | Should -Not -Throw
+        $configDpEndpoint | Should -Be "https://westus3.dp.kubernetesconfiguration.azure.sovereign.com"
     }
 }
 
 Describe 'Get-ConfigDpEndpoint' {
-    It 'Golden path' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
+    It 'Golden path' {
+        {
+            $cloudMetadata = [PSCustomObject]@{
+                authentication = [PSCustomobject]@{
+                    loginEndpoint = "https://login.microsoftonline.com"
+                    audiences = @(
+                        "https://management.core.windows.net/"
+                        "https://management.azure.com/"
+                    )
+                }
+            }
+           $script:configDpEndpoint = Get-ConfigDpEndpoint `
+                -Location "eastus2" `
+                -CloudMetadata $cloudMetadata
+        } | Should -Not -Throw
+
+        $configDpEndpoint.ConfigDpEndpoint | Should -Be "https://eastus2.dp.kubernetesconfiguration.azure.com"
+        $configDpEndpoint.ReleaseTrain | Should -Be $null
+        $configDpEndpoint.ADResourceId | Should -Be "https://management.core.windows.net/"
     }
 
-    It 'Read ARM metadata' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
+    It 'Read ARM metadata' {
+        {
+            $cloudMetadata = [PSCustomObject]@{
+                authentication = [PSCustomobject]@{
+                    loginEndpoint = "https://login.microsoftonline.com"
+                    audiences = @(
+                        "https://management.core.windows.net/"
+                        "https://management.azure.com/"
+                    )
+                }
+            }
+           $script:configDpEndpoint = Get-ConfigDpEndpoint `
+                -Location "eastus2" `
+                -CloudMetadata $cloudMetadata
+        } | Should -Not -Throw
+
+        $configDpEndpoint.ConfigDpEndpoint | Should -Be "https://eastus2.dp.kubernetesconfiguration.azure.com"
+        $configDpEndpoint.ReleaseTrain | Should -Be $null
+        $configDpEndpoint.ADResourceId | Should -Be "https://management.core.windows.net/"
     }
 
-    It 'No arcConfigEndpoint' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
+    It 'DataPlaneEndpoints, no ArcconfigEndpoints' {
+        {
+            $cloudMetadata = [PSCustomObject]@{
+                dataPlaneEndpoints = [PSCustomobject]@{
+                    something = "random"
+                }
+                authentication = [PSCustomobject]@{
+                    loginEndpoint = "https://login.microsoftonline.com"
+                    audiences = @(
+                        "https://management.core.windows.net/"
+                        "https://management.azure.com/"
+                    )
+                }
+            }
+           $script:configDpEndpoint = Get-ConfigDpEndpoint `
+                -Location "eastus2" `
+                -CloudMetadata $cloudMetadata
+        } | Should -Not -Throw
+
+        $configDpEndpoint.ConfigDpEndpoint | Should -Be "https://eastus2.dp.kubernetesconfiguration.azure.com"
+        $configDpEndpoint.ReleaseTrain | Should -Be $null
+        $configDpEndpoint.ADResourceId | Should -Be "https://management.core.windows.net/"
     }
 
-    It 'Read default ConfigDPEndoint' -skip {
-        { throw [System.NotImplementedException] } | Should -Not -Throw
+    It 'DataPlaneEndpoints and ArcConfigEndpoint' {
+        {
+            $cloudMetadata = [PSCustomObject]@{
+                dataPlaneEndpoints = [PSCustomobject]@{
+                    arcConfigEndpoint = "https://xanadu.dp.kubernetesconfiguration.azure.pleasuredome.com"
+                }
+                authentication = [PSCustomobject]@{
+                    loginEndpoint = "https://login.microsoftonline.com"
+                    audiences = @(
+                        "https://management.core.windows.net/"
+                        "https://management.azure.com/"
+                    )
+                }
+            }
+            $script:configDpEndpoint = Get-ConfigDpEndpoint `
+                -Location "eastus2" `
+                -CloudMetadata $cloudMetadata
+        } | Should -Not -Throw
+
+        $configDpEndpoint.ConfigDpEndpoint | Should -Be "https://xanadu.dp.kubernetesconfiguration.azure.pleasuredome.com"
+        $configDpEndpoint.ReleaseTrain | Should -Be $null
+        $configDpEndpoint.ADResourceId | Should -Be "https://management.core.windows.net/"
     }
 }
 
