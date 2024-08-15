@@ -32,6 +32,7 @@ https://learn.microsoft.com/powershell/module/az.connectedkubernetes/new-azconne
 
 [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
     Justification='Kubernetes is a recognised term', Scope='Function', Target='New-AzConnectedKubernetes')]
+[CmdletBinding()]    
 param()
 
 function New-AzConnectedKubernetes {
@@ -270,10 +271,13 @@ function New-AzConnectedKubernetes {
         ${GatewayResourceId}
     )
 
+    # Write-Debug "Outside of process"
+
     process {
         . "$PSScriptRoot/helpers/HelmHelper.ps1"
         . "$PSScriptRoot/helpers/ConfigDPHelper.ps1"
         . "$PSScriptRoot/helpers/AZCloudMetadataHelper.ps1"
+        Write-Debug "Debug: Inside of process"
         if($AzureHybridBenefit){
             if(!$AcceptEULA){
                 $legalTermPath = Join-Path $PSScriptRoot -ChildPath "LegalTerm.txt"
@@ -409,7 +413,11 @@ function New-AzConnectedKubernetes {
             $ConfigmapRgName = $Configmap.data.AZURE_RESOURCE_GROUP
             $ConfigmapClusterName = $Configmap.data.AZURE_RESOURCE_NAME
             try {
-                $ExistConnectedKubernetes = Get-AzConnectedKubernetes -ResourceGroupName $ConfigmapRgName -ClusterName $ConfigmapClusterName @CommonPSBoundParameters
+                $ExistConnectedKubernetes = Get-AzConnectedKubernetes `
+                  -ResourceGroupName $ConfigmapRgName `
+                  -ClusterName $ConfigmapClusterName `
+                  @CommonPSBoundParameters `
+                  -ErrorAction 'silentlycontinue'
 
                 if (($ResourceGroupName -eq $ConfigmapRgName) -and ($ClusterName -eq $ConfigmapClusterName)) {
                     # This performs a re-PUT of an existing connected cluster which should really be done using
@@ -423,7 +431,8 @@ function New-AzConnectedKubernetes {
                 return
             } catch {
                 # This is attempting to delete Azure Arc resources that are orphaned.
-                helm delete azure-arc --namespace $ReleaseNamespace --kubeconfig $KubeConfig --kube-context $KubeContext
+                # We are catching and ignoring any messages here.
+                $null = helm delete azure-arc --ignore-not-found --namespace $ReleaseNamespace --kubeconfig $KubeConfig --kube-context $KubeContext
             }
         }
 
@@ -667,16 +676,35 @@ function New-AzConnectedKubernetes {
         $configDpinfo = Get-ConfigDPEndpoint -location $Location -Cloud $cloudMetadata
         $configDPEndpoint = $configDpInfo.configDPEndpoint
         $adResourceId = $configDpInfo.adResourceId
-        Invoke-ConfigDPHealthCheck -configDPEndpoint $configDPEndpoint -Resource $adResourceId
+
+        # If the health check fails (not 200 response), an exception is thrown 
+        # so we can ignore the output.
+        $null = Invoke-ConfigDPHealthCheck -configDPEndpoint $configDPEndpoint -Resource $adResourceId
 
         # This call does the "pure ARM" update of the ARM objects.
         Write-Debug "Writing Connected Kubernetes ARM objects."
-        $PSBoundParameters.Add('AgentPublicKeyCertificate', $AgentPublicKey)
+
+        # We sometimes see the AgentPublicKeyCertificate present with value $null.
+        # If this is the case, update rather than adding.
+        if ($PSBoundParameters.ContainsKey('AgentPublicKeyCertificate')) {
+            $PSBoundParameters['AgentPublicKeyCertificate'] = $AgentPublicKey
+        } else {
+            $PSBoundParameters.Add('AgentPublicKeyCertificate', $AgentPublicKey)
+        }
         $Response = Az.ConnectedKubernetes.internal\New-AzConnectedKubernetes @PSBoundParameters
 
         # Retrieving Helm chart OCI (Open Container Initiative) Artifact location
         Write-Debug "Retrieving Helm chart OCI (Open Container Initiative) Artifact location."
-        $helmValuesDp = Get-HelmValues -configDPEndpoint $configDPEndpoint -releaseTrain $ReleaseTrain -requestBody $Response
+        Write-Debug "PUT response: $Response"
+        $ResponseStr = "$Response"
+        $helmValuesDp = Get-HelmValues `
+          -configDPEndpoint $configDPEndpoint `
+          -releaseTrain $ReleaseTrain `
+          -requestBody $ResponseStr `
+          -Verbose:($PSCmdlet.MyInvocation.BoundParameters["Verbose"].IsPresent -eq $true) `
+          -Debug:($PSCmdlet.MyInvocation.BoundParameters["Debug"].IsPresent -eq $true)
+
+        Write-Debug "helmValuesDp: $helmValuesDp"
         Write-Debug "OCI Artifact location: ${helmValuesDp.repositoryPath}."
 
         # Allow a custom OCI registry to be set via environment variables.
@@ -690,16 +718,17 @@ function New-AzConnectedKubernetes {
         # USERPROFILE
         #
         $registryPath = if ($env:HELMREGISTRY) { $env:HELMREGISTRY } else { $helmValuesDp.repositoryPath }
+        # !!PDS: Why do these not get logged?
         Write-Debug "RegistryPath: ${registryPath}."
 
-        $helmContentValues = $helmValuesDp["helmValuesContent"]
-        Write-Debug "Helm values: ${helmContentValues}."
+        $helmValuesContent = $helmValuesDp.helmValuesContent
+        Write-Debug "Helm values: ${helmValuesContent}."
 
-        foreach ($key in $helmContentValues.Keys) {
-            if ($key -in @("global.httpsProxy", "global.httpProxy", "global.noProxy", "global.proxyCert")) {
+        foreach ($field in $helmValuesContent.PSObject.Properties) {
+            if ($field.Name -in @("global.httpsProxy", "global.httpProxy", "global.noProxy", "global.proxyCert")) {
                 continue
             }
-            $options += " --set $Key=$($helmContentValues[$Key])"
+            $options += " --set $($field.Name)=$($field.Value)"
         }
         
         # !!PDS: Is there any telemetry in Powershell cmdlets?
@@ -719,9 +748,9 @@ function New-AzConnectedKubernetes {
         # !!PDS Aren't we supposed to read the helm config from the Cluster Config DP?
         # !!PDS: I think we might have done above, but why are we setting many options?
         $TenantId = [Microsoft.Azure.Commands.Common.Authentication.Abstractions.AzureRmProfileProvider]::Instance.Profile.DefaultContext.Tenant.Id
+        Write-Debug $options -ErrorAction Continue
         try {
             helm upgrade `
-            --debug `
             --install azure-arc `
             $ChartPath `
             --namespace $ReleaseInstallNamespace `

@@ -34,7 +34,7 @@ https://learn.microsoft.com/powershell/module/az.connectedkubernetes/new-azconne
     Justification='Kubernetes is a recognised term', Scope='Function', Target='New-AzConnectedKubernetes')]
 param()
 
-function New-AzConnectedKubernetes {
+function Set-AzConnectedKubernetes {
     [OutputType([Microsoft.Azure.PowerShell.Cmdlets.ConnectedKubernetes.Models.Api20240701Preview.IConnectedCluster])]
     [CmdletBinding(DefaultParameterSetName='CreateExpanded', PositionalBinding=$false, SupportsShouldProcess, ConfirmImpact='Medium')]
     [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText', '',
